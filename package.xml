@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dg_pid_tuner_gui</name>
+  <version>0.1.0</version>
+  <description>PyQt5 GUI for tuning ros2_control PidController gains on Tesollo grippers (3F_M / 3F_B / 4F / 5F / 5F_S). Supports manual edit, step response measurement, and auto-tuning (Relay Feedback, Cohen-Coon, Bayesian Optimization).</description>
+  <maintainer email="hchsk25@gmail.com">tesollo</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-yaml</depend>
+  <depend>python3-pyqt5</depend>
+  <depend>python3-matplotlib</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
