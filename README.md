@@ -3,10 +3,15 @@
 PyQt5 standalone GUI for tuning **ros2_control** PID gains on any controller that
 exposes runtime-reconfigurable gains. The controller type is **auto-detected**:
 
-| Controller | DOF parameter | Gain fields | Command interface |
-| --- | --- | --- | --- |
-| `pid_controller/PidController` | `dof_names` | `p, i, d, i_clamp_max, i_clamp_min` | `control_msgs/MultiDOFCommand` → `<ctrl>/reference` |
-| `joint_trajectory_controller/JointTrajectoryController` | `joints` | `p, i, d, i_clamp, ff_velocity_scale` | `trajectory_msgs/JointTrajectory` → `<ctrl>/joint_trajectory` |
+**`pid_controller/PidController`**
+- DOF parameter: `dof_names`
+- Gain fields: `p, i, d, i_clamp_max, i_clamp_min`
+- Command interface: `control_msgs/MultiDOFCommand` → `<ctrl>/reference`
+
+**`joint_trajectory_controller/JointTrajectoryController`**
+- DOF parameter: `joints`
+- Gain fields: `p, i, d, i_clamp, ff_velocity_scale`
+- Command interface: `trajectory_msgs/JointTrajectory` → `<ctrl>/joint_trajectory`
 
 The gain table columns, parameter paths, and step-command message are all selected
 automatically from whichever controller you connect to.
