@@ -61,12 +61,18 @@ class Tuner(ABC):
         pmin, pmax = self.config.p_bounds
         imin, imax = self.config.i_bounds
         dmin, dmax = self.config.d_bounds
+        i_clipped = float(np.clip(i, imin, imax))
+        clamp = abs(i_clipped) * 2.0
+        # Emit every clamp spelling; set_gains keeps only the fields the
+        # connected controller actually exposes (pid_controller uses
+        # i_clamp_max/min, JTC uses a single symmetric i_clamp).
         return {
             'p': float(np.clip(p, pmin, pmax)),
-            'i': float(np.clip(i, imin, imax)),
+            'i': i_clipped,
             'd': float(np.clip(d, dmin, dmax)),
-            'i_clamp_max': abs(float(np.clip(i, imin, imax))) * 2.0,
-            'i_clamp_min': -abs(float(np.clip(i, imin, imax))) * 2.0,
+            'i_clamp_max': clamp,
+            'i_clamp_min': -clamp,
+            'i_clamp': clamp,
         }
 
     def probe_response(

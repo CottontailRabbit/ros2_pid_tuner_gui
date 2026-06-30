@@ -1,11 +1,11 @@
 from setuptools import setup
 from glob import glob
 
-package_name = 'dg_pid_tuner_gui'
+package_name = 'ros2_pid_tuner_gui'
 
 setup(
     name=package_name,
-    version='0.1.0',
+    version='0.2.0',
     packages=[
         package_name,
         f'{package_name}.algorithms',
@@ -20,12 +20,13 @@ setup(
     zip_safe=True,
     maintainer='tesollo',
     maintainer_email='hchsk25@gmail.com',
-    description='PyQt5 GUI for tuning ros2_control PidController gains on Tesollo grippers.',
+    description='PyQt5 GUI for tuning ros2_control PID gains on any '
+                'pid_controller or joint_trajectory_controller.',
     license='BSD-3-Clause',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            f'dg_pid_tuner_gui = {package_name}.main:main',
+            f'ros2_pid_tuner_gui = {package_name}.main:main',
         ],
     },
 )

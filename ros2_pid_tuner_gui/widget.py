@@ -14,7 +14,8 @@ from PyQt5.QtWidgets import (
     QPlainTextEdit, QGroupBox, QSplitter, QSizePolicy,
 )
 
-from .ros_io import RosBackend, GAIN_FIELDS
+from .ros_io import RosBackend
+from .controllers import DEFAULT_GAIN_FIELDS
 from .plot import StepResponsePlot
 from .metrics import compute_step_metrics
 from .yaml_io import load_gains, save_gains
@@ -23,7 +24,6 @@ from .algorithms.base import TunerConfig
 
 
 CENTER_COL_HEADER = 'center [rad]'
-TABLE_FIELDS = (*GAIN_FIELDS, 'center')
 
 
 class TuneWorker(QObject):
@@ -114,15 +114,17 @@ class TuneWorker(QObject):
             self.finished.emit(None)
 
 
-class DgPidTunerWidget(QWidget):
+class Ros2PidTunerWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle('Tesollo DG PID Tuner')
+        self.setWindowTitle('ROS 2 PID Tuner')
         self.backend = RosBackend()
         self.backend.start()
         self._worker: TuneWorker | None = None
         self._worker_thread: threading.Thread | None = None
         self._joint_rows: dict[str, int] = {}
+        # Live gain columns; replaced by the connected controller's field set.
+        self._gain_fields: list[str] = list(DEFAULT_GAIN_FIELDS)
 
         self._build_ui()
         self._wire()
@@ -135,16 +137,17 @@ class DgPidTunerWidget(QWidget):
         # Connection bar
         conn_box = QGroupBox('Controller')
         conn_layout = QHBoxLayout(conn_box)
-        self.ed_namespace = QLineEdit('/dg3f_m')
-        self.ed_namespace.setPlaceholderText('namespace, e.g. /dg3f_m')
+        self.ed_namespace = QLineEdit('')
+        self.ed_namespace.setPlaceholderText('namespace, e.g. /robot or empty')
         self.ed_namespace.setToolTip(
-            'ROS namespace of the running ros2_control_node, e.g. /dg3f_m.\n'
+            'ROS namespace of the running ros2_control_node (empty if none).\n'
             'The tuner subscribes to <ns>/joint_states, <ns>/robot_description,\n'
             'and calls <ns>/<controller>/{get,set}_parameters.')
         self.ed_controller = QLineEdit('pid_controller')
         self.ed_controller.setToolTip(
-            'Name of the controller_interface PidController instance.\n'
-            'Default: pid_controller (matches dg*_pid_controller.yaml).')
+            'Name of the controller instance to tune. The controller type is\n'
+            'auto-detected: pid_controller (dof_names) or\n'
+            'joint_trajectory_controller (joints).')
         self.btn_connect = QPushButton('Connect')
         self.btn_connect.setToolTip('Subscribe to joint states / URDF and read current gains.')
         self.btn_refresh = QPushButton('Read gains')
@@ -170,9 +173,9 @@ class DgPidTunerWidget(QWidget):
         # Gain table (left)
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        self.table = QTableWidget(0, 1 + len(GAIN_FIELDS) + 1)
+        self.table = QTableWidget(0, 1 + len(self._gain_fields) + 1)
         self.table.setHorizontalHeaderLabels(
-            ['joint', *GAIN_FIELDS, CENTER_COL_HEADER])
+            ['joint', *self._gain_fields, CENTER_COL_HEADER])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setToolTip(
             'Per-joint gains. Edit cells then "Apply gains (live)".\n'
@@ -373,7 +376,15 @@ class DgPidTunerWidget(QWidget):
         if ok:
             self._populate_joints()
 
+    def _rebuild_table_columns(self) -> None:
+        """Sync the gain columns to the connected controller's field set."""
+        self._gain_fields = list(self.backend.gain_fields())
+        self.table.setColumnCount(1 + len(self._gain_fields) + 1)
+        self.table.setHorizontalHeaderLabels(
+            ['joint', *self._gain_fields, CENTER_COL_HEADER])
+
     def _populate_joints(self) -> None:
+        self._rebuild_table_columns()
         joints = self.backend.joints()
         self.cmb_joint.clear()
         self.cmb_joint.addItems(joints)
@@ -390,7 +401,7 @@ class DgPidTunerWidget(QWidget):
         self._on_urdf_refill(silent=True)
 
     def _center_col(self) -> int:
-        return 1 + len(GAIN_FIELDS)
+        return 1 + len(self._gain_fields)
 
     def _on_urdf_refill(self, silent: bool = False) -> None:
         limits = self.backend.joint_limits()
@@ -420,13 +431,13 @@ class DgPidTunerWidget(QWidget):
             return
         for j, row in self._joint_rows.items():
             g = gains.get(j, {})
-            for c, f in enumerate(GAIN_FIELDS, start=1):
+            for c, f in enumerate(self._gain_fields, start=1):
                 self.table.setItem(row, c, QTableWidgetItem(f'{g.get(f, 0.0):.4f}'))
 
     def _row_to_gains(self, joint: str) -> dict[str, float]:
         row = self._joint_rows[joint]
         out = {}
-        for c, f in enumerate(GAIN_FIELDS, start=1):
+        for c, f in enumerate(self._gain_fields, start=1):
             try:
                 out[f] = float(self.table.item(row, c).text())
             except (ValueError, AttributeError):
@@ -472,7 +483,7 @@ class DgPidTunerWidget(QWidget):
                 continue
             row = self._joint_rows[j]
             g = gains.get(j, {})
-            for c, f in enumerate(GAIN_FIELDS, start=1):
+            for c, f in enumerate(self._gain_fields, start=1):
                 self.table.setItem(row, c, QTableWidgetItem(f'{g.get(f, 0.0):.4f}'))
         self._append_log(f'Loaded {len(joints)} joints from {path}')
 
@@ -496,22 +507,8 @@ class DgPidTunerWidget(QWidget):
 
     def _write_new_yaml(self, path: str, joints: list[str], gains: dict) -> None:
         import yaml
-        doc = {
-            '/**/controller_manager': {
-                'ros__parameters': {
-                    'update_rate': 100,
-                    'pid_controller': {'type': 'pid_controller/PidController'},
-                }
-            },
-            '/**/pid_controller': {
-                'ros__parameters': {
-                    'dof_names': joints,
-                    'command_interface': 'effort',
-                    'reference_and_state_interfaces': ['position'],
-                    'gains': {j: gains.get(j, {}) for j in joints},
-                }
-            },
-        }
+        controller = self.ed_controller.text().strip() or 'pid_controller'
+        doc = self.backend.adapter().new_yaml_doc(controller, joints, gains)
         with open(path, 'w', encoding='utf-8') as f:
             yaml.safe_dump(doc, f, default_flow_style=False, sort_keys=False)
 
@@ -605,7 +602,7 @@ class DgPidTunerWidget(QWidget):
         joint = self.cmb_joint.currentText()
         if joint in self._joint_rows:
             row = self._joint_rows[joint]
-            for c, f in enumerate(GAIN_FIELDS, start=1):
+            for c, f in enumerate(self._gain_fields, start=1):
                 self.table.setItem(row, c, QTableWidgetItem(f'{result.gains.get(f, 0.0):.4f}'))
 
     def _on_cancel(self) -> None:

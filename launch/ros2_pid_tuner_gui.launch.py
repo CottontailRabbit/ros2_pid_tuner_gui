@@ -7,16 +7,16 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     namespace_arg = DeclareLaunchArgument(
-        'namespace', default_value='/dg3f_m',
-        description='Controller namespace, e.g. /dg3f_m')
+        'namespace', default_value='',
+        description='Controller namespace, e.g. /robot (empty if none)')
     controller_arg = DeclareLaunchArgument(
         'controller', default_value='pid_controller',
-        description='Controller name')
+        description='Controller name (pid_controller or joint_trajectory_controller)')
 
     gui_node = Node(
-        package='dg_pid_tuner_gui',
-        executable='dg_pid_tuner_gui',
-        name='dg_pid_tuner_gui',
+        package='ros2_pid_tuner_gui',
+        executable='ros2_pid_tuner_gui',
+        name='ros2_pid_tuner_gui',
         output='screen',
         parameters=[{
             'namespace': LaunchConfiguration('namespace'),

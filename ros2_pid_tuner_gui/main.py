@@ -5,12 +5,12 @@ import sys
 
 from PyQt5.QtWidgets import QApplication
 
-from .widget import DgPidTunerWidget
+from .widget import Ros2PidTunerWidget
 
 
 def main(args=None) -> int:
     app = QApplication(sys.argv if args is None else list(args))
-    w = DgPidTunerWidget()
+    w = Ros2PidTunerWidget()
     w.resize(1200, 760)
     w.show()
     return app.exec_()

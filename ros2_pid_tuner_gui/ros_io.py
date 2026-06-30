@@ -26,16 +26,14 @@ from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-try:
-    from control_msgs.msg import MultiDOFCommand
-    HAVE_MULTIDOF = True
-except ImportError:
-    HAVE_MULTIDOF = False
-
 from PyQt5.QtCore import QObject, pyqtSignal
 
+from .controllers import (ControllerAdapter, ADAPTERS, DEFAULT_GAIN_FIELDS,
+                          PidControllerAdapter)
 
-GAIN_FIELDS = ('p', 'i', 'd', 'i_clamp_max', 'i_clamp_min')
+# Kept for backwards-compat imports; the live field set comes from the
+# connected controller's adapter (see RosBackend.gain_fields()).
+GAIN_FIELDS = DEFAULT_GAIN_FIELDS
 
 
 @dataclass
@@ -70,6 +68,7 @@ class RosBackend(QObject):
 
         self._namespace: str = ''
         self._controller: str = 'pid_controller'
+        self._adapter: ControllerAdapter = PidControllerAdapter()
         self._joints: list[str] = []
         self._latest_pos: dict[str, float] = {}
         self._capture: Optional[StepCapture] = None
@@ -84,11 +83,11 @@ class RosBackend(QObject):
                 return
             if not rclpy.ok():
                 rclpy.init()
-            self._node = Node('dg_pid_tuner_gui')
+            self._node = Node('ros2_pid_tuner_gui')
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
             self._spin_thread = threading.Thread(
-                target=self._executor.spin, daemon=True, name='dg_pid_tuner_spin'
+                target=self._executor.spin, daemon=True, name='ros2_pid_tuner_spin'
             )
             self._spin_thread.start()
             self._emit_log('rclpy backend started.')
@@ -111,7 +110,8 @@ class RosBackend(QObject):
     # -- connection ----------------------------------------------------
 
     def connect_controller(self, namespace: str, controller: str = 'pid_controller') -> bool:
-        """Subscribe to joint_states and resolve the controller's joints."""
+        """Auto-detect the controller type, subscribe to joint_states and
+        resolve its joints."""
         if self._node is None:
             self.start()
         with self._lock:
@@ -119,11 +119,17 @@ class RosBackend(QObject):
             self._controller = controller
             ns = self._namespace if self._namespace.startswith('/') else ('/' + self._namespace if self._namespace else '')
 
-            joints = self._fetch_dof_names(ns, controller)
-            if not joints:
-                self.connection_changed.emit(False, f'No dof_names from {ns}/{controller}')
+            adapter, joints = self._detect_controller(ns, controller)
+            if adapter is None:
+                self.connection_changed.emit(
+                    False,
+                    f'Could not detect controller type at {ns}/{controller} '
+                    f'(no dof_names/joints parameter).')
                 return False
+            self._adapter = adapter
             self._joints = joints
+            self._emit_log(
+                f'Detected {adapter.kind} ({adapter.dof_param}: {len(joints)} dof).')
 
             # joint_states subscription
             qos = QoSProfile(depth=50, reliability=QoSReliabilityPolicy.RELIABLE,
@@ -134,14 +140,14 @@ class RosBackend(QObject):
             self._joint_sub = self._node.create_subscription(
                 JointState, js_topic, self._on_joint_state, qos)
 
-            # reference publisher
-            if HAVE_MULTIDOF:
-                ref_topic = f'{ns}/{controller}/reference'
-                if self._ref_pub is not None:
-                    self._node.destroy_publisher(self._ref_pub)
-                self._ref_pub = self._node.create_publisher(MultiDOFCommand, ref_topic, 10)
-            else:
-                self._emit_log('control_msgs/MultiDOFCommand not available; reference publishing disabled.')
+            # command/reference publisher (controller-type specific)
+            if self._ref_pub is not None:
+                self._node.destroy_publisher(self._ref_pub)
+            self._ref_pub = adapter.make_publisher(self._node, ns, controller)
+            if self._ref_pub is None:
+                self._emit_log(
+                    'Command publisher unavailable for this controller '
+                    '(missing message type?); step/tune disabled.')
 
             # URDF subscription (latched/transient_local) for joint limits
             qos_latched = QoSProfile(
@@ -157,8 +163,17 @@ class RosBackend(QObject):
             self._urdf_sub = self._node.create_subscription(
                 String, urdf_topic, self._on_urdf, qos_latched)
 
-            self.connection_changed.emit(True, f'Connected to {ns}/{controller}, {len(joints)} joints.')
+            self.connection_changed.emit(
+                True,
+                f'Connected to {ns}/{controller} [{adapter.kind}], '
+                f'{len(joints)} joints.')
             return True
+
+    def adapter(self) -> ControllerAdapter:
+        return self._adapter
+
+    def gain_fields(self) -> tuple[str, ...]:
+        return self._adapter.gain_fields
 
     def joint_limits(self) -> dict[str, tuple[float, float]]:
         return dict(self._joint_limits)
@@ -222,23 +237,30 @@ class RosBackend(QObject):
         ns = self._namespace if self._namespace.startswith('/') else ('/' + self._namespace if self._namespace else '')
         return f'{ns}/{self._controller}/{suffix}'
 
-    def _fetch_dof_names(self, ns: str, controller: str) -> list[str]:
+    def _detect_controller(self, ns: str, controller: str):
+        """Identify the controller type by probing its DOF parameter.
+
+        Asks for every adapter's dof parameter in one GetParameters call;
+        whichever comes back as a non-empty string array wins.
+        Returns (adapter_instance, joints) or (None, []).
+        """
         client = self._node.create_client(GetParameters, f'{ns}/{controller}/get_parameters')
         if not client.wait_for_service(timeout_sec=3.0):
             self._emit_log(f'Service {ns}/{controller}/get_parameters not available.')
-            return []
+            return None, []
+        candidates = [(cls, cls.dof_param) for cls in ADAPTERS]
         req = GetParameters.Request()
-        req.names = ['dof_names']
+        req.names = [param for _, param in candidates]
         future = client.call_async(req)
         if not self._wait_future(future, 3.0):
-            return []
+            return None, []
         resp = future.result()
-        if not resp or not resp.values:
-            return []
-        v = resp.values[0]
-        if v.type == ParameterType.PARAMETER_STRING_ARRAY:
-            return list(v.string_array_value)
-        return []
+        if not resp or len(resp.values) != len(candidates):
+            return None, []
+        for (cls, _param), v in zip(candidates, resp.values):
+            if v.type == ParameterType.PARAMETER_STRING_ARRAY and v.string_array_value:
+                return cls(), list(v.string_array_value)
+        return None, []
 
     def get_all_gains(self) -> dict[str, dict[str, float]]:
         if not self._joints:
@@ -249,7 +271,7 @@ class RosBackend(QObject):
             return {}
         names: list[str] = []
         for j in self._joints:
-            for f in GAIN_FIELDS:
+            for f in self._adapter.gain_fields:
                 names.append(self._param_full_name(j, f))
         req = GetParameters.Request()
         req.names = names
@@ -272,7 +294,7 @@ class RosBackend(QObject):
             self._emit_log('set_parameters service not available.')
             return False
         params = []
-        for f in GAIN_FIELDS:
+        for f in self._adapter.gain_fields:
             if f not in gains:
                 continue
             p = Parameter()
@@ -317,7 +339,8 @@ class RosBackend(QObject):
     def run_step(self, joint: str, target: float, duration: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
         """Blocking call: publish step reference and capture response."""
         if self._ref_pub is None:
-            raise RuntimeError('No reference publisher available (control_msgs missing or not connected).')
+            raise RuntimeError('No command publisher available (not connected, or '
+                               'message type missing for this controller).')
         if joint not in self._joints:
             raise ValueError(f'Joint {joint!r} not in controller dof_names.')
         initial = self._latest_pos.get(joint)
@@ -340,17 +363,12 @@ class RosBackend(QObject):
             self._capture = cap
 
         # publish step reference (target for selected joint, hold others at current)
-        msg = MultiDOFCommand()
-        msg.dof_names = list(self._joints)
-        msg.values = [self._latest_pos.get(j, 0.0) for j in self._joints]
+        values = [self._latest_pos.get(j, 0.0) for j in self._joints]
         try:
-            idx = self._joints.index(joint)
-            msg.values[idx] = float(target)
+            values[self._joints.index(joint)] = float(target)
         except ValueError:
             pass
-        # values_dot: leave empty (zero feedforward)
-        msg.values_dot = []
-        self._ref_pub.publish(msg)
+        self._ref_pub.publish(self._adapter.build_command(self._joints, values))
 
         # wait for capture to finish
         cap.done_event.wait(timeout=duration + 1.0)
@@ -366,11 +384,8 @@ class RosBackend(QObject):
         """Send a reference message holding given joint positions (others = latest)."""
         if self._ref_pub is None:
             return
-        msg = MultiDOFCommand()
-        msg.dof_names = list(self._joints)
-        msg.values = [positions.get(j, self._latest_pos.get(j, 0.0)) for j in self._joints]
-        msg.values_dot = []
-        self._ref_pub.publish(msg)
+        values = [positions.get(j, self._latest_pos.get(j, 0.0)) for j in self._joints]
+        self._ref_pub.publish(self._adapter.build_command(self._joints, values))
 
     # -- callbacks -----------------------------------------------------
 

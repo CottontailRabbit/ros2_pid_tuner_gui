@@ -1,25 +1,36 @@
-# dg_pid_tuner_gui
+# ros2_pid_tuner_gui
 
-PyQt5 standalone GUI for tuning `pid_controller/PidController` (ros2_controllers) gains on Tesollo grippers (3F_M / 3F_B / 4F / 5F / 5F_S).
+PyQt5 standalone GUI for tuning **ros2_control** PID gains on any controller that
+exposes runtime-reconfigurable gains. The controller type is **auto-detected**:
+
+| Controller | DOF parameter | Gain fields | Command interface |
+| --- | --- | --- | --- |
+| `pid_controller/PidController` | `dof_names` | `p, i, d, i_clamp_max, i_clamp_min` | `control_msgs/MultiDOFCommand` → `<ctrl>/reference` |
+| `joint_trajectory_controller/JointTrajectoryController` | `joints` | `p, i, d, i_clamp, ff_velocity_scale` | `trajectory_msgs/JointTrajectory` → `<ctrl>/joint_trajectory` |
+
+The gain table columns, parameter paths, and step-command message are all selected
+automatically from whichever controller you connect to.
 
 ## Features
 
-- Connect to a running `ros2_control_node` by namespace (e.g. `/dg3f_m`).
-- Live-edit per-joint gains: `p`, `i`, `d`, `i_clamp_max`, `i_clamp_min`.
-- "Apply gains (live)" → sends `set_parameters` to the controller; the change takes effect immediately (standard ros2_control PidController behaviour).
+- Connect to a running `ros2_control_node` by namespace and controller name; the
+  controller type (pid_controller / joint_trajectory_controller) is detected from
+  its parameters.
+- Live-edit per-joint gains and **Apply gains (live)** → `set_parameters`, effective
+  immediately.
 - Run a step test on any joint and see overshoot / settling time / rise time / SSE / IAE.
-- **Auto-tune** the selected joint with one of:
-  - **Relay Feedback (Åström–Hägglund)** — safer auto Ziegler-Nichols using Tyreus-Luyben rules.
-  - **Cohen-Coon** — single step, FOPDT fit, classic open-loop tuning.
-  - **Bayesian Optimization (GP + EI)** — modern, sample-efficient global search. Uses [`scikit-optimize`](https://scikit-optimize.github.io) when available, otherwise a numpy fallback.
+- **Auto-tune** the selected joint with one of: Ziegler-Nichols, Cohen-Coon,
+  Chien-Hrones-Reswick, Internal Model Control, Relay Feedback, or Bayesian
+  Optimization (GP + EI).
 - Cost = `w₁·overshoot + w₂·settling + w₃·SSE` (weights configurable in UI).
-- Save/Load `pid_controller.yaml` files in the standard ros2_control format.
+- Save/Load controller gain YAML files in the standard ros2_control format
+  (handles both `dof_names`- and `joints`-style controllers).
 
 ## Build
 
 ```bash
 cd <your_ros2_ws>   # workspace containing this package under src/
-colcon build --packages-select dg_pid_tuner_gui
+colcon build --packages-select ros2_pid_tuner_gui
 source install/setup.bash
 ```
 
@@ -33,23 +44,36 @@ pip install --user scikit-optimize   # optional, enables faster Bayesian Optimiz
 ## Run
 
 ```bash
-# 1) bring up the gripper PID controller (separate terminal)
-ros2 launch dg3f_m_driver dg3f_m_pid_controller.launch.py delto_ip:=169.254.186.72
-
-# 2) launch the GUI
-ros2 run dg_pid_tuner_gui dg_pid_tuner_gui
+ros2 run ros2_pid_tuner_gui ros2_pid_tuner_gui
 # or
-ros2 launch dg_pid_tuner_gui dg_pid_tuner_gui.launch.py namespace:=/dg3f_m
+ros2 launch ros2_pid_tuner_gui ros2_pid_tuner_gui.launch.py \
+    namespace:=/your_ns controller:=pid_controller
+```
+
+For a joint_trajectory_controller:
+
+```bash
+ros2 launch ros2_pid_tuner_gui ros2_pid_tuner_gui.launch.py \
+    namespace:=/your_ns controller:=joint_trajectory_controller
 ```
 
 ## Workflow
 
-1. Type the controller namespace (e.g. `/dg3f_m`) and click **Connect**.
-2. The joint list is read from `dof_names`; the gain table is populated from the running controller via `get_parameters`.
-3. Pick a joint and click **Run step test** to characterise the current PID's response.
-4. Pick an algorithm (Bayesian Optimization recommended), set step Δ and capture window, then click **Auto-tune selected joint**.
-5. The tuner repeatedly: applies candidate gains → publishes a step reference → captures `joint_states` for `duration` seconds → scores the response → proposes the next candidate. Best gains are auto-applied at the end and reflected in the table.
-6. Click **Save YAML...** to persist the result to e.g. `dg3f_m_pid_controller.yaml`.
+1. Type the controller **namespace** (empty if none) and **controller** name, then
+   click **Connect**. The type is auto-detected and logged.
+2. The joint list is read from `dof_names`/`joints`; the gain table columns and values
+   are populated from the running controller via `get_parameters`.
+3. Pick a joint and click **Run step test** to characterise the current response.
+4. Pick an algorithm (Bayesian Optimization recommended), set step Δ and capture
+   window, then click **Auto-tune selected joint**.
+5. The tuner repeatedly: applies candidate gains → commands a step reference →
+   captures `joint_states` for `duration` seconds → scores the response → proposes the
+   next candidate. Best gains are auto-applied at the end and reflected in the table.
+6. Click **Save YAML...** to persist the result.
+
+> **JTC note:** the step command is a single-waypoint `JointTrajectory` published on
+> `<ctrl>/joint_trajectory` (topic interface), which the controller tracks with its
+> internal PID. Make sure the controller is active and accepting trajectories.
 
 ## Algorithm details
 
@@ -87,12 +111,15 @@ All FOPDT methods identify a first-order plus dead-time model `K e^{-Ls} / (τs+
 
 ## Safety notes
 
-- Auto-tuning **moves the joint repeatedly**. Make sure the gripper has clearance.
-- The step Δ is added to the joint's current position (not absolute); pick a value that stays inside the joint's safe range.
+- Auto-tuning **moves the joint repeatedly**. Make sure the mechanism has clearance.
+- The step Δ is relative to the joint's `center` (not absolute); pick a value that stays inside the joint's safe range.
 - Use the **Cancel** button to abort mid-run; the worker stops at the next iteration boundary.
 
 ## Compatibility
 
 - ROS 2 Humble or newer.
-- Requires `control_msgs/msg/MultiDOFCommand` for publishing the reference (Humble+ has it).
-- Tested with `pid_controller/PidController` from `ros2_controllers`.
+- `pid_controller` requires `control_msgs/msg/MultiDOFCommand` (Humble+ has it).
+- `joint_trajectory_controller` uses the `joint_trajectory` topic interface and
+  `trajectory_msgs`.
+- Tested against `ros2_controllers`' `pid_controller/PidController` and
+  `joint_trajectory_controller/JointTrajectoryController`.

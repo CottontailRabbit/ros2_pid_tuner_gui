@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>dg_pid_tuner_gui</name>
-  <version>0.1.0</version>
-  <description>PyQt5 GUI for tuning ros2_control PidController gains on Tesollo grippers (3F_M / 3F_B / 4F / 5F / 5F_S). Supports manual edit, step response measurement, and auto-tuning (Relay Feedback, Cohen-Coon, Bayesian Optimization).</description>
+  <name>ros2_pid_tuner_gui</name>
+  <version>0.2.0</version>
+  <description>PyQt5 GUI for tuning ros2_control PID gains on any controller that exposes runtime gains. Auto-detects the controller type (pid_controller or joint_trajectory_controller), supports manual edit, step-response measurement, and auto-tuning (Ziegler-Nichols, Cohen-Coon, CHR, IMC, Relay Feedback, Bayesian Optimization).</description>
   <maintainer email="hchsk25@gmail.com">tesollo</maintainer>
   <license>BSD-3-Clause</license>
 
@@ -11,6 +11,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
   <depend>rcl_interfaces</depend>
   <depend>python3-numpy</depend>
   <depend>python3-yaml</depend>
